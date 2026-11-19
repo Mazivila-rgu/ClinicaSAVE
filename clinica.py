@@ -1,457 +1,310 @@
 # -*- coding: utf-8 -*-
-"""Interface de consola e controlo do programa (classe Clinica)."""
+"""clinica.py - Regras de negócio (camada de serviço)."""
 
-import seguranca
-from base_dados import BaseDados, ErroBaseDados
-from modelos import Administrador, HistoricoClinica, Medico, Paciente, Utilizador
-from utils import (linha, titulo, ler_texto, ler_inteiro, ler_sexo,
-                   ler_senha, ler_data_hora, pausar)
+from modelos import (Administrador, Atendimento, Medico, Paciente,
+                     RegistoHistorico, RegistoPaciente)
+from seguranca import Seguranca
+from utils import ErroAutenticacao, ErroClinica, Interface
+
+
+# ============================================================================
+# CLÍNICA (regras de negócio)
+# ============================================================================
 
 
 class Clinica:
-    """Orquestra os menus e liga a interface às classes do domínio."""
+    """Camada de serviço: todas as operações sobre utilizadores e atendimentos."""
 
-    PAPEIS = {
-        1: ("Paciente", Paciente),
-        2: ("Médico", Medico),
-        3: ("Administrador", Administrador),
-    }
+    def __init__(self, bd):
+        self.bd = bd
 
-    def __init__(self, bd=None):
-        self.bd = bd or BaseDados()
+    # ---------------- utilizadores e autenticação ----------------
 
-    # ------------------------------------------------------------------
-    # Arranque e tratamento de erros
-    # ------------------------------------------------------------------
+    def existe_nome_utilizador(self, nome_utilizador):
+        return self.bd.um(
+            "SELECT 1 FROM utilizadores WHERE nome_utilizador = ?", (nome_utilizador,)
+        ) is not None
 
-    def executar(self):
-        try:
-            self.bd.abrir()
-            self._seguro(self._configurar_primeiro_administrador)
-            self._menu_principal()
-        except ErroBaseDados as erro:
-            print(f"\n  [!] Erro na base de dados: {erro}.")
-        except (KeyboardInterrupt, EOFError):
-            print("\n\nSessão terminada.")
-        except Exception as erro:  # última barreira: o programa nunca "rebenta"
-            print(f"\n  [!] Erro inesperado: {erro}")
-        finally:
-            self.bd.fechar()
-
-    def _seguro(self, funcao, *args):
-        """Executa uma ação e mostra uma mensagem amigável se algo falhar."""
-        try:
-            return funcao(*args)
-        except ErroBaseDados as erro:
-            print(f"\n  [!] Erro na base de dados: {erro}.")
-        except ValueError as erro:
-            print(f"\n  [!] Dados inválidos: {erro}.")
-        return None
-
-    # ------------------------------------------------------------------
-    # Menu principal e acesso
-    # ------------------------------------------------------------------
-
-    def _menu_principal(self):
-        while True:
-            titulo("Clínica Virtual")
-            print("Quem é o utilizador?")
-            print("1. Paciente")
-            print("2. Médico")
-            print("3. Administrador do sistema")
-            print("0. Sair")
-            opcao = ler_inteiro("\nOpção: ", 0, 3)
-            if opcao == 0:
-                print("\nObrigado por utilizar a Clínica Virtual. Até breve!")
-                return
-            rotulo, classe = self.PAPEIS[opcao]
-            self._seguro(self._fluxo_acesso, rotulo, classe)
-
-    def _fluxo_acesso(self, rotulo, classe):
-        eh_admin = classe is Administrador
-        while True:
-            titulo(f"Acesso - {rotulo}")
-            print("1. Iniciar sessão")
-            if not eh_admin:
-                print("2. Cadastrar-me")
-            print("0. Voltar")
-            opcao = ler_inteiro("\nOpção: ", 0, 1 if eh_admin else 2)
-            if opcao == 0:
-                return
-            if opcao == 2:
-                self._seguro(self._cadastrar, classe)
-                pausar()
-                continue
-            utilizador = self._seguro(self._autenticar, classe)
-            if utilizador is None:
-                pausar()
-                continue
-            if classe is Paciente:
-                self._menu_paciente(utilizador)
-            elif classe is Medico:
-                self._menu_medico(utilizador)
-            else:
-                self._menu_administrador(utilizador)
-            return
-
-    def _autenticar(self, classe):
-        nome_utilizador = ler_texto("Nome de utilizador: ")
-        senha = ler_senha()
-        utilizador = classe.autenticar(self.bd, nome_utilizador, senha)
-        if utilizador is None:
-            print("  [!] Credenciais inválidas.")
-        return utilizador
-
-    def _configurar_primeiro_administrador(self):
-        if Administrador.existe_algum(self.bd):
-            return
-        titulo("Primeira execução")
-        print("Ainda não existe nenhum administrador. Crie a conta de administrador.\n")
-        nome_utilizador, senha = self._pedir_credenciais_novas()
-        Administrador.registar(self.bd, nome_utilizador, senha)
-        print("\nAdministrador criado com sucesso.")
-
-    # ------------------------------------------------------------------
-    # Entrada de dados partilhada
-    # ------------------------------------------------------------------
-
-    def _pedir_nova_senha(self, mensagem="Palavra-passe"):
-        minimo = seguranca.TAMANHO_MIN_SENHA
-        while True:
-            senha = ler_senha(f"{mensagem} (mín. {minimo} caracteres): ")
-            if len(senha) < minimo:
-                print("  [!] A palavra-passe é demasiado curta.")
-                continue
-            if senha != ler_senha("Confirme a palavra-passe: "):
-                print("  [!] As palavras-passe não coincidem.")
-                continue
-            return senha
-
-    def _pedir_credenciais_novas(self):
-        while True:
-            nome_utilizador = ler_texto("Nome de utilizador: ")
-            if Utilizador.existe_nome(self.bd, nome_utilizador):
-                print("  [!] Esse nome de utilizador já existe. Escolha outro.")
-                continue
-            break
-        return nome_utilizador, self._pedir_nova_senha()
-
-    # ------------------------------------------------------------------
-    # Cadastro
-    # ------------------------------------------------------------------
-
-    def _cadastrar(self, classe):
-        if classe is Medico:
-            self._cadastrar_medico()
-        else:
-            self._cadastrar_paciente()
-
-    def _cadastrar_medico(self):
-        titulo("Cadastro de médico")
-        nome_utilizador, senha = self._pedir_credenciais_novas()
-        print("\n-- Perfil profissional --")
-        nome = ler_texto("Nome completo: ")
-        idade = ler_inteiro("Idade: ", 18, 100)
-        sexo = ler_sexo()
-        formacao = ler_texto("Formação (ex.: Medicina Geral): ")
-        print("Nível de formação:")
-        for i, nivel in enumerate(Medico.NIVEIS_FORMACAO, 1):
-            print(f"  {i}. {nivel}")
-        escolha = ler_inteiro("Escolha: ", 1, len(Medico.NIVEIS_FORMACAO))
-        nivel = Medico.NIVEIS_FORMACAO[escolha - 1]
-        especializacao = ler_texto("Especialização (ENTER se não tiver): ", obrigatorio=False)
-        Medico.cadastrar(self.bd, nome_utilizador, senha, nome, idade, sexo,
-                         formacao, nivel, especializacao)
-        print("\nMédico cadastrado com sucesso. Já pode iniciar sessão.")
-
-    def _cadastrar_paciente(self):
-        titulo("Cadastro de paciente")
-        nome_utilizador, senha = self._pedir_credenciais_novas()
-        print("\n-- Dados pessoais --")
-        nome = ler_texto("Nome completo: ")
-        idade = ler_inteiro("Idade: ", 0, 120)
-        sexo = ler_sexo()
-        moradia = ler_texto("Moradia (bairro/cidade): ")
-        Paciente.cadastrar(self.bd, nome_utilizador, senha, nome, idade, sexo, moradia)
-        print("\nPaciente cadastrado com sucesso. Já pode iniciar sessão.")
-
-    # ------------------------------------------------------------------
-    # Apresentação de dados
-    # ------------------------------------------------------------------
+    def existe_administrador(self):
+        return self.bd.um(
+            "SELECT 1 FROM utilizadores WHERE papel = 'administrador'"
+        ) is not None
 
     @staticmethod
-    def _mostrar_medico(m):
-        print(f"  [{m.perfil_id}] Dr(a). {m.nome}")
-        print(f"      Idade: {m.idade} | Sexo: {m.sexo}")
-        print(f"      Formação: {m.formacao} ({m.nivel_formacao})")
-        print(f"      Especialização: {m.especializacao}")
+    def _inserir_utilizador(conexao, nome_utilizador, senha, papel, chefe=False):
+        sal = Seguranca.novo_sal()
+        cursor = conexao.execute(
+            """INSERT INTO utilizadores (nome_utilizador, senha_hash, sal, papel, chefe)
+               VALUES (?,?,?,?,?)""",
+            (nome_utilizador, Seguranca.gerar_hash(senha, sal), sal, papel, int(chefe)),
+        )
+        return cursor.lastrowid
+
+    # ---------------- permissões ----------------
 
     @staticmethod
-    def _mostrar_registo(r):
-        linha("-")
-        print(f"Data de entrada : {r['data_entrada']}")
-        print(f"Médico          : {r['nome_medico']}")
-        print(f"Tipo de consulta: {r['tipo_consulta'].capitalize()}")
-        print(f"Diagnóstico     : {r['diagnostico']}")
-        print(f"Prescrição      : {r['prescricao']}")
+    def _exigir_administrador(executor):
+        if executor is None or executor["papel"] != "administrador":
+            raise ErroClinica("Apenas administradores podem realizar esta operação.")
 
     @staticmethod
-    def _mostrar_historico(h):
-        linha("-")
-        print(f"Paciente        : {h['nome_paciente']} ({h['idade']} anos, {h['sexo']})")
-        print(f"Data de entrada : {h['data_entrada']}")
-        print(f"Sintomas        : {h['sintomas']}")
-        print(f"Resultados testes: {h['resultados_testes']}")
-        print(f"Diagnóstico     : {h['diagnostico']}")
-        print(f"Prescrição      : {h['prescricao']}")
-        print(f"Médico          : {h['nome_medico']}")
-        print(f"Tipo de consulta: {h['tipo_consulta'].capitalize()}")
-        if h["tipo_consulta"] == "presencial":
-            print(f"Justificação da consulta presencial: {h['justificacao_presencial']}")
+    def _exigir_chefe(executor):
+        if executor is None or executor["papel"] != "administrador" or not executor["chefe"]:
+            raise ErroClinica("Apenas o administrador chefe pode realizar esta operação.")
 
-    @staticmethod
-    def _mostrar_pedido_medico(a):
-        linha("-")
-        print(f"Pedido n.º {a.id} | Entrada: {a.data_entrada}")
-        print(f"Paciente: {a.nome_paciente} ({a.idade_paciente} anos, {a.sexo_paciente}) - {a.moradia}")
-        print(f"Sintomas: {a.sintomas}")
-        if a.estado == "presencial_agendada":
-            print(f"Consulta presencial: {a.data_consulta}")
-            print(f"Justificação       : {a.justificacao}")
+    # ---------------- administradores ----------------
 
-    @staticmethod
-    def _mostrar_pedido_paciente(a):
-        linha("-")
-        print(f"Data do pedido: {a.data_entrada}")
-        print(f"Médico        : {a.nome_medico}")
-        print(f"Sintomas      : {a.sintomas}")
-        if a.estado == "pendente":
-            print("Estado        : Aguarda resposta do médico")
-        else:
-            print("Estado        : CONSULTA PRESENCIAL MARCADA")
-            print(f"Data da consulta: {a.data_consulta}")
-            print(f"Motivo          : {a.justificacao}")
+    def cadastrar_chefe(self, nome_utilizador, senha):
+        """Cria o administrador chefe (só é possível quando ainda não há administradores)."""
+        if self.existe_administrador():
+            raise ErroClinica("Já existe um administrador chefe.")
+        with self.bd.transacao() as conexao:
+            self._inserir_utilizador(conexao, nome_utilizador, senha, "administrador", chefe=True)
 
-    def _consultar_historico(self):
-        """Acessível apenas a médicos e administradores."""
-        titulo("Histórico clínico dos pacientes")
-        filtro = ler_texto("Pesquisar por nome do paciente (ENTER para ver todos): ", False)
-        registos = HistoricoClinica.pesquisar(self.bd, filtro or None)
-        if not registos:
-            print("\nNenhum registo encontrado no histórico clínico.")
-            return
-        print(f"\n{len(registos)} registo(s) encontrado(s):")
-        for h in registos:
-            self._mostrar_historico(h)
+    def cadastrar_administrador(self, executor, nome_utilizador, senha):
+        """Apenas o administrador chefe pode registar novos administradores."""
+        self._exigir_chefe(executor)
+        with self.bd.transacao() as conexao:
+            self._inserir_utilizador(conexao, nome_utilizador, senha, "administrador")
 
-    # ------------------------------------------------------------------
-    # Menu do paciente
-    # ------------------------------------------------------------------
+    def listar_administradores(self):
+        linhas = self.bd.todos(
+            """SELECT id, nome_utilizador, chefe FROM utilizadores
+               WHERE papel = 'administrador' ORDER BY chefe DESC, id"""
+        )
+        return [Administrador(l) for l in linhas]
 
-    def _menu_paciente(self, paciente):
-        acoes = {
-            1: self._paciente_pedir_atendimento,
-            2: self._paciente_ver_pedidos,
-            3: self._paciente_ver_registo,
-        }
-        while True:
-            titulo(f"Paciente: {paciente.nome}")
-            print("1. Ver médicos e pedir atendimento")
-            print("2. Os meus pedidos em curso")
-            print("3. O meu registo médico")
-            print("0. Terminar sessão")
-            opcao = ler_inteiro("\nOpção: ", 0, 3)
-            if opcao == 0:
-                return
-            self._seguro(acoes[opcao], paciente)
-            pausar()
+    def remover_administrador(self, executor, administrador_id):
+        """Apenas o chefe remove administradores; o chefe nunca pode ser removido."""
+        self._exigir_chefe(executor)
+        alvo = self.bd.um(
+            "SELECT * FROM utilizadores WHERE id = ? AND papel = 'administrador'",
+            (administrador_id,),
+        )
+        if alvo is None:
+            raise ErroClinica("Administrador inexistente.")
+        if alvo["chefe"]:
+            raise ErroClinica("O administrador chefe não pode ser removido.")
+        with self.bd.transacao() as conexao:
+            conexao.execute("DELETE FROM utilizadores WHERE id = ?", (alvo["id"],))
 
-    def _paciente_pedir_atendimento(self, paciente):
-        titulo("Escolher médico")
-        medicos = Medico.listar(self.bd)
-        if not medicos:
-            print("\nAinda não há médicos cadastrados.")
-            return
-        for m in medicos:
-            self._mostrar_medico(m)
-            print()
-        ids_validos = {m.perfil_id for m in medicos}
-        while True:
-            escolha = input("Introduza o número do médico (0 para voltar): ").strip()
-            if escolha == "0":
-                return
-            if escolha.isdigit() and int(escolha) in ids_validos:
-                medico_id = int(escolha)
-                break
-            print("  [!] Médico inválido.")
-        print("\nDescreva os seus sintomas (seja o mais detalhado possível):")
-        sintomas = ler_texto("> ")
-        paciente.pedir_atendimento(self.bd, medico_id, sintomas)
-        print("\nPedido enviado ao médico. Acompanhe o estado em 'Os meus pedidos'.")
+    # ---------------- médicos e pacientes ----------------
 
-    def _paciente_ver_pedidos(self, paciente):
-        titulo("Os meus pedidos em curso")
-        pedidos = paciente.pedidos_em_curso(self.bd)
-        if not pedidos:
-            print("\nNão tem pedidos em curso.")
-            return
-        for p in pedidos:
-            self._mostrar_pedido_paciente(p)
+    def cadastrar_medico(self, executor, nome_utilizador, senha, nome, idade, sexo,
+                         formacao, nivel_formacao, especializacao):
+        """Os médicos só podem ser cadastrados por administradores."""
+        self._exigir_administrador(executor)
+        with self.bd.transacao() as conexao:
+            utilizador_id = self._inserir_utilizador(conexao, nome_utilizador, senha, "medico")
+            conexao.execute(
+                """INSERT INTO medicos
+                   (utilizador_id, nome, idade, sexo, formacao, nivel_formacao, especializacao)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (utilizador_id, nome, idade, sexo, formacao, nivel_formacao, especializacao or None),
+            )
 
-    def _paciente_ver_registo(self, paciente):
-        titulo("O meu registo médico")
-        registos = paciente.registos(self.bd)
-        if not registos:
-            print("\nAinda não tem registos médicos.")
-            return
-        for r in registos:
-            self._mostrar_registo(r)
+    def remover_medico(self, executor, medico_id):
+        """Qualquer administrador pode remover um médico.
+        - Os registos médicos já concluídos são mantidos (guardam o nome do médico).
+        - Os pedidos ainda por tratar são MANTIDOS, ficam sem médico e o paciente é
+          convidado a reencaminhá-los para outro médico (ver reencaminhar_pedido).
+        - Consultas presenciais já marcadas por este médico voltam a pedidos pendentes,
+          para o novo médico decidir.
+        Devolve o número de pedidos que ficaram sem médico."""
+        self._exigir_administrador(executor)
+        medico = self.bd.um("SELECT * FROM medicos WHERE id = ?", (medico_id,))
+        if medico is None:
+            raise ErroClinica("Médico inexistente.")
+        with self.bd.transacao() as conexao:
+            conexao.execute(
+                """UPDATE atendimentos
+                   SET estado = 'pendente', justificacao_presencial = NULL,
+                       data_consulta_presencial = NULL
+                   WHERE medico_id = ? AND estado = 'presencial_agendada'""",
+                (medico["id"],),
+            )
+            sem_medico = conexao.execute(
+                "SELECT COUNT(*) FROM atendimentos WHERE medico_id = ? AND estado = 'pendente'",
+                (medico["id"],),
+            ).fetchone()[0]
+            # Todos os atendimentos deixam de apontar para o médico removido
+            conexao.execute(
+                "UPDATE atendimentos SET medico_id = NULL WHERE medico_id = ?", (medico["id"],)
+            )
+            conexao.execute("DELETE FROM medicos WHERE id = ?", (medico["id"],))
+            conexao.execute("DELETE FROM utilizadores WHERE id = ?", (medico["utilizador_id"],))
+        return sem_medico
 
-    # ------------------------------------------------------------------
-    # Menu do médico
-    # ------------------------------------------------------------------
+    def pedidos_sem_medico(self, paciente_id):
+        linhas = self.bd.todos(
+            """SELECT * FROM atendimentos
+               WHERE paciente_id = ? AND medico_id IS NULL AND estado = 'pendente'
+               ORDER BY id""",
+            (paciente_id,),
+        )
+        return [Atendimento(l) for l in linhas]
 
-    def _menu_medico(self, medico):
-        acoes = {
-            1: self._medico_tratar_pendentes,
-            2: self._medico_consultas_presenciais,
-            3: lambda _medico: self._consultar_historico(),
-            4: self._medico_ver_perfil,
-        }
-        while True:
-            titulo(f"Médico: {medico.nome}")
-            print("1. Pedidos de atendimento pendentes")
-            print("2. Consultas presenciais agendadas")
-            print("3. Histórico clínico dos pacientes")
-            print("4. O meu perfil")
-            print("0. Terminar sessão")
-            opcao = ler_inteiro("\nOpção: ", 0, 4)
-            if opcao == 0:
-                return
-            self._seguro(acoes[opcao], medico)
-            pausar()
-
-    @staticmethod
-    def _escolher_pedido(pedidos):
-        ids = {p.id for p in pedidos}
-        while True:
-            escolha = input("\nNúmero do pedido a tratar (0 para voltar): ").strip()
-            if escolha == "0":
-                return None
-            if escolha.isdigit() and int(escolha) in ids:
-                return next(p for p in pedidos if p.id == int(escolha))
-            print("  [!] Pedido inválido.")
-
-    def _medico_tratar_pendentes(self, medico):
-        titulo("Pedidos de atendimento pendentes")
-        pedidos = medico.pedidos(self.bd, "pendente")
-        if not pedidos:
-            print("\nNão há pedidos pendentes.")
-            return
-        for p in pedidos:
-            self._mostrar_pedido_medico(p)
-        pedido = self._escolher_pedido(pedidos)
+    def reencaminhar_pedido(self, paciente_id, atendimento_id, novo_medico_id):
+        """Passa um pedido sem médico para o médico escolhido pelo paciente."""
+        pedido = self.bd.um(
+            """SELECT 1 FROM atendimentos
+               WHERE id = ? AND paciente_id = ? AND medico_id IS NULL AND estado = 'pendente'""",
+            (atendimento_id, paciente_id),
+        )
         if pedido is None:
-            return
+            raise ErroClinica("Pedido inválido ou já reencaminhado.")
+        if self.bd.um("SELECT 1 FROM medicos WHERE id = ?", (novo_medico_id,)) is None:
+            raise ErroClinica("Médico inexistente.")
+        with self.bd.transacao() as conexao:
+            conexao.execute(
+                "UPDATE atendimentos SET medico_id = ? WHERE id = ?",
+                (novo_medico_id, atendimento_id),
+            )
 
-        print("\nO que pretende fazer?")
-        print("1. Prescrever diagnóstico virtual")
-        print("2. Marcar consulta presencial (necessidade de testes)")
-        print("0. Voltar")
-        opcao = ler_inteiro("Opção: ", 0, 2)
-        if opcao == 1:
-            diagnostico = ler_texto("Diagnóstico: ")
-            prescricao = ler_texto("Prescrição médica: ")
-            pedido.concluir(self.bd, medico.nome, "virtual",
-                            "Não aplicável (atendimento virtual)", diagnostico, prescricao)
-            print("\nAtendimento virtual concluído e registado.")
-        elif opcao == 2:
-            justificacao = ler_texto("Justificação médica da consulta presencial: ")
-            data_consulta = ler_data_hora("Data e hora da consulta (dd/mm/aaaa hh:mm): ")
-            pedido.agendar_presencial(self.bd, justificacao, data_consulta)
-            print("\nConsulta presencial marcada. O paciente será informado na sua conta.")
+    def cadastrar_paciente(self, nome_utilizador, senha, nome, idade, sexo, moradia):
+        with self.bd.transacao() as conexao:
+            utilizador_id = self._inserir_utilizador(conexao, nome_utilizador, senha, "paciente")
+            conexao.execute(
+                "INSERT INTO pacientes (utilizador_id, nome, idade, sexo, moradia) VALUES (?,?,?,?,?)",
+                (utilizador_id, nome, idade, sexo, moradia),
+            )
 
-    def _medico_consultas_presenciais(self, medico):
-        titulo("Consultas presenciais agendadas")
-        pedidos = medico.pedidos(self.bd, "presencial_agendada")
-        if not pedidos:
-            print("\nNão há consultas presenciais agendadas.")
-            return
-        for p in pedidos:
-            self._mostrar_pedido_medico(p)
-        pedido = self._escolher_pedido(pedidos)
-        if pedido is None:
-            return
-        print("\nRegisto da consulta presencial:")
-        resultados = ler_texto("Resultados dos testes realizados: ")
-        diagnostico = ler_texto("Diagnóstico: ")
-        prescricao = ler_texto("Prescrição médica: ")
-        pedido.concluir(self.bd, medico.nome, "presencial", resultados, diagnostico, prescricao)
-        print("\nConsulta presencial concluída e registada.")
+    def autenticar(self, nome_utilizador, senha, papel):
+        linha = self.bd.um(
+            "SELECT * FROM utilizadores WHERE nome_utilizador = ? AND papel = ?",
+            (nome_utilizador, papel),
+        )
+        if linha is None or not Seguranca.verificar(senha, linha["sal"], linha["senha_hash"]):
+            raise ErroAutenticacao("Credenciais inválidas.")
+        return linha
 
-    def _medico_ver_perfil(self, medico):
-        titulo("O meu perfil")
-        self._mostrar_medico(medico)
+    def alterar_senha(self, utilizador, senha_atual, nova_senha):
+        if not Seguranca.verificar(senha_atual, utilizador["sal"], utilizador["senha_hash"]):
+            raise ErroAutenticacao("Palavra-passe actual incorrecta.")
+        sal = Seguranca.novo_sal()
+        with self.bd.transacao() as conexao:
+            conexao.execute(
+                "UPDATE utilizadores SET senha_hash = ?, sal = ? WHERE id = ?",
+                (Seguranca.gerar_hash(nova_senha, sal), sal, utilizador["id"]),
+            )
 
-    # ------------------------------------------------------------------
-    # Menu do administrador
-    # ------------------------------------------------------------------
+    # ---------------- perfis ----------------
 
-    def _menu_administrador(self, admin):
-        acoes = {
-            1: lambda _admin: self._consultar_historico(),
-            2: lambda _admin: self._admin_listar_medicos(),
-            3: lambda _admin: self._admin_listar_pacientes(),
-            4: lambda _admin: self._admin_novo_administrador(),
-        }
-        while True:
-            titulo(f"Administrador: {admin.nome_utilizador}")
-            print("1. Histórico clínico dos pacientes")
-            print("2. Listar médicos")
-            print("3. Listar pacientes")
-            print("4. Registar novo administrador")
-            print("5. Alterar a minha palavra-passe")
-            print("0. Terminar sessão")
-            opcao = ler_inteiro("\nOpção: ", 0, 5)
-            if opcao == 0:
-                return
-            if opcao == 5:
-                if self._seguro(self._admin_alterar_senha, admin):
-                    return
-            else:
-                self._seguro(acoes[opcao], admin)
-            pausar()
+    def obter_medico(self, utilizador_id):
+        linha = self.bd.um("SELECT * FROM medicos WHERE utilizador_id = ?", (utilizador_id,))
+        if linha is None:
+            raise ErroClinica("Perfil de médico não encontrado.")
+        return Medico(linha)
 
-    def _admin_listar_medicos(self):
-        titulo("Médicos cadastrados")
-        medicos = Medico.listar(self.bd)
-        if not medicos:
-            print("\nNenhum médico cadastrado.")
-        for m in medicos:
-            self._mostrar_medico(m)
-            print()
+    def obter_paciente(self, utilizador_id):
+        linha = self.bd.um("SELECT * FROM pacientes WHERE utilizador_id = ?", (utilizador_id,))
+        if linha is None:
+            raise ErroClinica("Perfil de paciente não encontrado.")
+        return Paciente(linha)
 
-    def _admin_listar_pacientes(self):
-        titulo("Pacientes cadastrados")
-        pacientes = Paciente.listar(self.bd)
-        if not pacientes:
-            print("\nNenhum paciente cadastrado.")
-        for p in pacientes:
-            print(f"  [{p.perfil_id}] {p.nome} | {p.idade} anos | {p.sexo} | {p.moradia}")
+    def listar_medicos(self):
+        return [Medico(l) for l in self.bd.todos("SELECT * FROM medicos ORDER BY nome")]
 
-    def _admin_novo_administrador(self):
-        titulo("Registar novo administrador")
-        nome_utilizador, senha = self._pedir_credenciais_novas()
-        Administrador.registar(self.bd, nome_utilizador, senha)
-        print("\nNovo administrador registado.")
+    def listar_pacientes(self):
+        return [Paciente(l) for l in self.bd.todos("SELECT * FROM pacientes ORDER BY nome")]
 
-    def _admin_alterar_senha(self, admin):
-        titulo("Alterar palavra-passe")
-        atual = ler_senha("Palavra-passe atual: ")
-        if not admin.verificar_senha(atual):
-            print("  [!] Palavra-passe atual incorreta.")
-            return False
-        nova = self._pedir_nova_senha("Nova palavra-passe")
-        admin.alterar_senha(self.bd, nova)
-        print("\nPalavra-passe alterada. Será necessário iniciar sessão novamente.")
-        return True
+    # ---------------- atendimentos ----------------
+
+    def criar_atendimento(self, paciente_id, medico_id, sintomas):
+        if self.bd.um("SELECT 1 FROM medicos WHERE id = ?", (medico_id,)) is None:
+            raise ErroClinica("Médico inexistente.")
+        with self.bd.transacao() as conexao:
+            conexao.execute(
+                """INSERT INTO atendimentos (paciente_id, medico_id, data_entrada, sintomas)
+                   VALUES (?,?,?,?)""",
+                (paciente_id, medico_id, Interface.agora(), sintomas),
+            )
+
+    def pedidos_do_medico(self, medico_id, estado):
+        linhas = self.bd.todos(
+            """SELECT a.*, p.nome AS nome_paciente, p.idade, p.sexo, p.moradia
+               FROM atendimentos a JOIN pacientes p ON p.id = a.paciente_id
+               WHERE a.medico_id = ? AND a.estado = ? ORDER BY a.id""",
+            (medico_id, estado),
+        )
+        return [Atendimento(l) for l in linhas]
+
+    def pedidos_em_curso_do_paciente(self, paciente_id):
+        linhas = self.bd.todos(
+            """SELECT a.*, m.nome AS nome_medico FROM atendimentos a
+               LEFT JOIN medicos m ON m.id = a.medico_id
+               WHERE a.paciente_id = ? AND a.estado != 'concluido' ORDER BY a.id DESC""",
+            (paciente_id,),
+        )
+        return [Atendimento(l) for l in linhas]
+
+    def _obter_pedido(self, atendimento_id, medico_id, estado):
+        linha = self.bd.um(
+            "SELECT * FROM atendimentos WHERE id = ? AND medico_id = ? AND estado = ?",
+            (atendimento_id, medico_id, estado),
+        )
+        if linha is None:
+            raise ErroClinica("Pedido inválido ou já tratado.")
+        return Atendimento(linha)
+
+    def agendar_presencial(self, atendimento_id, medico, justificacao, data_consulta):
+        pedido = self._obter_pedido(atendimento_id, medico.id, "pendente")
+        with self.bd.transacao() as conexao:
+            conexao.execute(
+                """UPDATE atendimentos
+                   SET estado = 'presencial_agendada',
+                       justificacao_presencial = ?, data_consulta_presencial = ?
+                   WHERE id = ?""",
+                (justificacao, data_consulta, pedido.id),
+            )
+
+    def finalizar_atendimento(self, atendimento_id, medico, tipo, resultados,
+                              diagnostico, prescricao):
+        """Conclui o atendimento e grava os dois registos médicos numa só transacção."""
+        if tipo not in ("virtual", "presencial"):
+            raise ErroClinica("Tipo de consulta inválido.")
+        estado_necessario = "pendente" if tipo == "virtual" else "presencial_agendada"
+        pedido = self._obter_pedido(atendimento_id, medico.id, estado_necessario)
+        justificacao = pedido.justificacao_presencial if tipo == "presencial" else None
+
+        with self.bd.transacao() as conexao:
+            conexao.execute(
+                "UPDATE atendimentos SET estado = 'concluido' WHERE id = ?", (pedido.id,)
+            )
+            # 1) Registo na conta do paciente
+            conexao.execute(
+                """INSERT INTO registos_paciente
+                   (atendimento_id, paciente_id, data_entrada, diagnostico, prescricao,
+                    nome_medico, tipo_consulta) VALUES (?,?,?,?,?,?,?)""",
+                (pedido.id, pedido.paciente_id, pedido.data_entrada,
+                 diagnostico, prescricao, medico.nome, tipo),
+            )
+            # 2) Registo no histórico da clínica (acesso restrito)
+            conexao.execute(
+                """INSERT INTO historico_clinica
+                   (atendimento_id, paciente_id, data_entrada, sintomas, resultados_testes,
+                    diagnostico, prescricao, nome_medico, tipo_consulta, justificacao_presencial)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (pedido.id, pedido.paciente_id, pedido.data_entrada, pedido.sintomas,
+                 resultados, diagnostico, prescricao, medico.nome, tipo, justificacao),
+            )
+
+    # ---------------- registos médicos ----------------
+
+    def registos_do_paciente(self, paciente_id):
+        linhas = self.bd.todos(
+            "SELECT * FROM registos_paciente WHERE paciente_id = ? ORDER BY id DESC",
+            (paciente_id,),
+        )
+        return [RegistoPaciente(l) for l in linhas]
+
+    def historico_clinica(self, nome_paciente=None):
+        """Apenas para médicos e administradores (garantido pelos menus)."""
+        sql = """SELECT h.*, p.nome AS nome_paciente, p.idade, p.sexo
+                 FROM historico_clinica h JOIN pacientes p ON p.id = h.paciente_id"""
+        parametros = ()
+        if nome_paciente:
+            sql += " WHERE p.nome LIKE ?"
+            parametros = (f"%{nome_paciente}%",)
+        sql += " ORDER BY h.id DESC"
+        return [RegistoHistorico(l) for l in self.bd.todos(sql, parametros)]
