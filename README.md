@@ -7,7 +7,7 @@ Sistema de consultas médicas em linha, feito em Python. Permite que pacientes e
 - Emilio Felix Mazivila (Mazivila-rgu)
 - Jaime de Henriqueta Nelson Cuinica (jaimecuinica80-ai)
 - Piedade Celestino Boa (boapiedadecelestino-sudo)
-- Henriqueta Gabriela Bombe (Gabriela Bombe Henriqueta)
+- Henriqueta Gabriela Bombe (HenriquetaGabrielagit)
 
 ## Funcionalidades
 
