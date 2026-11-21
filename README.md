@@ -1,4 +1,4 @@
-# Clínica Virtual
+# Projecto_Python_Unisave_2026
 
 Sistema de consultas médicas em linha, feito em Python. Permite que pacientes escolham um médico, descrevam os sintomas e recebam um diagnóstico virtual ou uma marcação de consulta presencial, mantendo um registo médico seguro de cada atendimento.
 
